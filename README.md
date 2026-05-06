@@ -1,13 +1,22 @@
 # <img src="https://files.manuscdn.com/user_upload_by_module/session_file/310519663627759315/BpibWxscEgRTtjiI.png" alt="G4T0XX Music Player" width="120" height="120" style="border-radius: 20px; margin-right: 20px;" align="left" /> G4T0XX Music Player
 
+
+
+
 ## 🎵 O Player de Música Mais Avançado para Android
+
+
+
 
 Um **aplicativo nativo de streaming de música** construído com React 19, TypeScript e Capacitor 7, oferecendo uma experiência premium com suporte a múltiplas fontes, modo cinema, letras sincronizadas e muito mais.
 
+
+
 <br clear="left" />
 
----
 
+
+---
 ## 🚀 O que você recebe
 
 O **G4T0XX Music Player** é uma solução completa de streaming de música que combina tecnologia web moderna com integração nativa do Android. Desenvolvido com foco em **resiliência, performance e experiência do usuário**, o aplicativo oferece funcionalidades avançadas que rivalizem com os maiores players de música do mercado.
