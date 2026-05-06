@@ -5,14 +5,14 @@ import {
   ListMusic, Settings as SettingsIcon, History, Star,
   X, Maximize2, Minimize2, Plus, Trash2, QrCode, Copy, Check,
   Repeat1, Coffee, Github, ExternalLink, WifiOff, RefreshCw,
-  Gauge, Mic2, ChevronDown, FolderOpen, Video,
+  Gauge, Mic2, ChevronDown, FolderOpen, Video, Globe2, Youtube,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useMusicPlayer } from './lib/store';
 import {
   Song, getRecents, getFavorites, addToFavorites, getPlaylists,
   saveSong, getSetting, saveSetting, getSongs, savePlaylist,
-  deletePlaylist, Playlist, clearRecents,
+  deletePlaylist, Playlist, clearRecents, getLocalSongs, removeFavorite,
 } from './lib/storage';
 import {
   searchYoutube, getAudioStream, downloadAudioOffline,
@@ -30,6 +30,7 @@ import { usePermissions } from './hooks/usePermissions';
 import { useMediaSession } from './hooks/useMediaSession';
 import { setNativeEqualizerPreset } from './lib/nativeAudioEffects';
 import { isNativeAndroid, prepareNativeAudio } from './lib/nativeLocalMusic';
+import { mergeOfflineAndLocalSongs } from './lib/musicLibrary';
 
 function fmtSecs(s: number): string {
   if (!s || isNaN(s) || s < 0) return '0:00';
@@ -298,6 +299,10 @@ export default function App() {
   const [streamAttempt, setStreamAttempt] = useState(0);
 
   // Settings
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [appIconImage, setAppIconImage] = useState('');
+  const [appIconVideo, setAppIconVideo] = useState('');
+  const [appIconObjectUrl, setAppIconObjectUrl] = useState('');
   const [bgImage, setBgImage]         = useState('');
   const [bgVideo, setBgVideo]         = useState('');
   const [bgObjectUrl, setBgObjectUrl] = useState('');
@@ -324,11 +329,13 @@ export default function App() {
   const [newPlName, setNewPlName]   = useState('');
   const [showNewPl, setShowNewPl]   = useState(false);
   const [copied, setCopied]         = useState(false);
+  const [webPortalUrl, setWebPortalUrl] = useState('https://m.youtube.com/feed/playlists');
 
   // Refs
   const audioRef    = useRef<HTMLAudioElement>(null);
   const silentRef   = useRef<HTMLAudioElement>(null);
   const wakeLockRef = useRef<any>(null);
+  const appIconFileRef = useRef<HTMLInputElement | null>(null);
   const bgFileRef   = useRef<HTMLInputElement | null>(null);
   const eqCtxRef    = useRef<AudioContext|null>(null);
   const eqSrcRef    = useRef<MediaElementAudioSourceNode|null>(null);
@@ -359,13 +366,13 @@ export default function App() {
     const h = accentColor.replace('#','');
     const r=parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
     document.documentElement.style.setProperty('--accent-rgb', `${r},${g},${b}`);
-    saveSetting('accent_color', accentColor);
-  }, [accentColor]);
+    if (settingsLoaded) saveSetting('accent_color', accentColor);
+  }, [accentColor, settingsLoaded]);
 
   useEffect(() => {
     document.documentElement.style.fontSize = uiSize==='small'?'14px':uiSize==='large'?'18px':'16px';
-    saveSetting('ui_size', uiSize);
-  }, [uiSize]);
+    if (settingsLoaded) saveSetting('ui_size', uiSize);
+  }, [uiSize, settingsLoaded]);
 
   useEffect(() => {
     setStreamAttempt(0);
@@ -373,11 +380,10 @@ export default function App() {
 
   // ── INIT ────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    loadLibrary();
-    loadSettings();
-    window.addEventListener('online',  () => setIsOffline(false));
-    window.addEventListener('offline', () => setIsOffline(true));
-    document.addEventListener('visibilitychange', () => {
+    let mounted = true;
+    const onOnline = () => setIsOffline(false);
+    const onOffline = () => setIsOffline(true);
+    const onVisibilityChange = () => {
       // Quando tela apaga ou app vai para background:
       silentRef.current?.play().catch(() => {});
       if (eqCtxRef.current?.state === 'suspended') {
@@ -387,16 +393,24 @@ export default function App() {
       if (document.visibilityState === 'hidden' && audioRef.current && isPlaying) {
         audioRef.current.play().catch(() => {});
       }
-    });
-    // Evento nativo do Capacitor para quando o app vai para background
-    document.addEventListener('pause', () => {
+    };
+    const onNativePause = () => {
       silentRef.current?.play().catch(() => {});
       if (eqCtxRef.current?.state === 'suspended') eqCtxRef.current.resume().catch(() => {});
-    });
-    const notifReady = typeof Notification !== 'undefined' && Notification.permission === 'granted';
-    if (!localStorage.getItem('perms_asked') || !notifReady) {
-      setTimeout(() => setShowPermModal(true), 1200);
-    }
+    };
+
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    // Evento nativo do Capacitor para quando o app vai para background
+    document.addEventListener('pause', onNativePause);
+
+    (async () => {
+      await Promise.all([loadLibrary(), loadSettings()]);
+      const asked = localStorage.getItem('perms_asked') || await getSetting('perms_asked');
+      if (asked) localStorage.setItem('perms_asked', '1');
+      if (mounted && !asked) setTimeout(() => mounted && setShowPermModal(true), 1200);
+    })();
 
     // Controles via notificação / botões de hardware
     (window as any).__musicControl = (action: string) => {
@@ -412,28 +426,47 @@ export default function App() {
     (window as any).__onAppResume = () => {
       if (eqCtxRef.current?.state === 'suspended') eqCtxRef.current.resume().catch(() => {});
     };
-    return () => { delete (window as any).__musicControl; };
+    return () => {
+      mounted = false;
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      document.removeEventListener('pause', onNativePause);
+      delete (window as any).__musicControl;
+      delete (window as any).__onAppPause;
+      delete (window as any).__onAppResume;
+    };
   }, []);
 
   const loadSettings = async () => {
-    const theme = await getSetting('custom_theme');
-    if (theme) {
-      if (typeof theme === 'string') setBgImage(theme);
-      else if (theme.type === 'video') setBgVideo(theme.data);
-      else setBgImage(theme.data);
+    try {
+      const theme = await getSetting('custom_theme');
+      if (theme) {
+        if (typeof theme === 'string') setBgImage(theme);
+        else if (theme.type === 'video') setBgVideo(theme.data);
+        else setBgImage(theme.data);
+      }
+      const icon = await getSetting('app_icon_media');
+      if (icon) {
+        if (icon.type === 'video') setAppIconVideo(icon.data);
+        else setAppIconImage(icon.data);
+      }
+      const spd = await getSetting('playback_speed'); if (typeof spd === 'number') setPlaybackSpeed(spd);
+      const acc = await getSetting('accent_color');   if (acc) setAccentColor(acc);
+      const custom = await getSetting('custom_color'); if (custom) setCustomColor(custom);
+      const sz  = await getSetting('ui_size');         if (sz) setUISize(sz);
+      const op  = await getSetting('bg_opacity');      if (typeof op === 'number') setBgOpacity(op);
+      const bl  = await getSetting('bg_blur');         if (typeof bl === 'number') setBgBlur(bl);
+      const eq  = await getSetting('eq_preset');       if (eq) setEqPreset(eq);
+    } finally {
+      setSettingsLoaded(true);
     }
-    const spd = await getSetting('playback_speed'); if (typeof spd === 'number') setPlaybackSpeed(spd);
-    const acc = await getSetting('accent_color');   if (acc) setAccentColor(acc);
-    const sz  = await getSetting('ui_size');         if (sz) setUISize(sz);
-    const op  = await getSetting('bg_opacity');      if (typeof op === 'number') setBgOpacity(op);
-    const bl  = await getSetting('bg_blur');         if (typeof bl === 'number') setBgBlur(bl);
-    const eq  = await getSetting('eq_preset');       if (eq) setEqPreset(eq);
   };
 
   const loadLibrary = async () => {
-    const [r,f,p,s] = await Promise.all([getRecents(), getFavorites(), getPlaylists(), getSongs()]);
+    const [r,f,p,s,l] = await Promise.all([getRecents(), getFavorites(), getPlaylists(), getSongs(), getLocalSongs()]);
     setRecents(r); setFavorites(f); setPlaylists(p);
-    setOfflineSongs(s.filter(x => x.isDownloaded));
+    setOfflineSongs(mergeOfflineAndLocalSongs(s, l));
     setFavoritedIds(new Set(f.map((x:Song) => x.id)));
   };
 
@@ -601,8 +634,8 @@ export default function App() {
   // ── Velocidade ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = playbackSpeed;
-    saveSetting('playback_speed', playbackSpeed);
-  }, [playbackSpeed, audioUrl]); // re-aplica quando URL muda
+    if (settingsLoaded) saveSetting('playback_speed', playbackSpeed);
+  }, [playbackSpeed, audioUrl, settingsLoaded]); // re-aplica quando URL muda
 
   // ── Volume ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -707,8 +740,8 @@ export default function App() {
 
   useEffect(() => {
     applyEQ(eqPreset);
-    saveSetting('eq_preset', eqPreset);
-  }, [eqPreset, applyEQ]);
+    if (settingsLoaded) saveSetting('eq_preset', eqPreset);
+  }, [eqPreset, applyEQ, settingsLoaded]);
 
   // ── Seek ──────────────────────────────────────────────────────────────────
   const handleSeek = useCallback((v: number) => {
@@ -805,6 +838,14 @@ export default function App() {
     loadLibrary();
   };
 
+  const handleRemoveFavorite = async (song: Song, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    await removeFavorite(song.id);
+    setFavoritedIds(prev => { const s = new Set(prev); s.delete(song.id); return s; });
+    await loadLibrary();
+    showToast('Removido dos favoritos', 'info');
+  };
+
   const handlePlaySong = (song: Song, list?: Song[]) => {
     if (audioRef.current) {
       audioRef.current.pause();
@@ -834,6 +875,29 @@ export default function App() {
     reader.onload = async ev => saveSetting('custom_theme', { type: isVid ? 'video' : 'image', data: ev.target?.result });
     reader.readAsDataURL(file);
     showToast('Fundo atualizado!', 'success'); e.target.value = '';
+  };
+
+  const handleAppIconFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    if (appIconObjectUrl) URL.revokeObjectURL(appIconObjectUrl);
+    setAppIconObjectUrl(URL.createObjectURL(file));
+    const isVid = file.type.startsWith('video/');
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      const data = ev.target?.result;
+      if (!data) return;
+      if (isVid) { setAppIconVideo(String(data)); setAppIconImage(''); }
+      else { setAppIconImage(String(data)); setAppIconVideo(''); }
+      await saveSetting('app_icon_media', { type: isVid ? 'video' : 'image', data });
+      showToast('Icone do app atualizado!', 'success');
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const markPermissionsAsked = async () => {
+    localStorage.setItem('perms_asked','1');
+    await saveSetting('perms_asked', true);
   };
 
   const handleEnterPip = () => {
@@ -973,7 +1037,7 @@ export default function App() {
       {/* Header */}
       <header className="relative z-10 flex items-center gap-2 bg-brand-dark/70 backdrop-blur-md border-b border-white/5 flex-shrink-0"
         style={{ padding:'10px 12px', paddingTop:'max(10px,env(safe-area-inset-top))' }}>
-        <GatoIcon className="w-9 h-9 flex-shrink-0"/>
+        <BrandIcon image={appIconImage} video={appIconVideo} className="w-9 h-9 flex-shrink-0"/>
         <span className="font-black tracking-tighter text-sm hidden xs:block flex-shrink-0" style={{ color:'var(--accent,#e11d48)' }}>G4T0XX</span>
         <form onSubmit={handleSearch} className="flex-1 relative min-w-0">
           <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none"/>
@@ -1003,6 +1067,7 @@ export default function App() {
               { id:'favorites', icon:<Star size={20}/>,       label:'Favoritos' },
               { id:'offline',   icon:<Download size={20}/>,   label:'Offline' },
               { id:'cinema',    icon:<Video size={20}/>,      label:'Cinema' },
+              { id:'web',       icon:<Globe2 size={20}/>,     label:'YouTube' },
               { id:'playlists', icon:<ListMusic size={20}/>,  label:'Playlists' },
             ].map(item => (
               <button key={item.id} onClick={() => item.id === 'cinema' ? openCinemaTab() : setActiveTab(item.id)} title={item.label}
@@ -1097,7 +1162,8 @@ export default function App() {
                         isDownloading={downloadingIds.has(song.id)} dlPct={dlPct[song.id]}
                         isActive={currentSong?.id===song.id} isLoading={audioLoading&&currentSong?.id===song.id}
                         onClick={() => handlePlaySong(song, favorites)}
-                        onFav={e => handleToggleFavorite(song, e)} onDownload={e => handleDownload(song, e)}/>
+                        onFav={e => handleRemoveFavorite(song, e)} onDownload={e => handleDownload(song, e)}
+                        favoriteAction="delete"/>
                     ))}</div>
                   )}
                 </motion.div>
@@ -1138,8 +1204,12 @@ export default function App() {
 
               {activeTab==='cinema' && (
                 <motion.div key="cinema" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="space-y-3">
-                  <VideoTab song={currentSong} startAt={progress} onOpenPlayer={() => setShowVideo(true)} />
+                  <VideoTab song={currentSong} startAt={progress} playlist={queue} autoplay onOpenPlayer={() => setShowVideo(true)} />
                 </motion.div>
+              )}
+
+              {activeTab==='web' && (
+                <WebPortal currentSong={currentSong} frameUrl={webPortalUrl} onFrameUrlChange={setWebPortalUrl} />
               )}
 
               {activeTab==='playlists' && (
@@ -1187,7 +1257,7 @@ export default function App() {
                 <motion.div key="sup" initial={{opacity:0,y:16}} animate={{opacity:1,y:0}} exit={{opacity:0}}>
                   <div className="max-w-sm mx-auto space-y-4">
                     <div className="text-center pt-2">
-                      <GatoIcon className="w-16 h-16 mx-auto mb-3"/>
+                      <BrandIcon image={appIconImage} video={appIconVideo} className="w-16 h-16 mx-auto mb-3"/>
                       <h2 className="text-xl font-black">Apoie o <span style={{color:'var(--accent,#e11d48)'}}>Criador</span></h2>
                       <p className="text-zinc-400 text-sm mt-1">Feito com ❤️ por <strong className="text-white">G4T0XX</strong>.</p>
                     </div>
@@ -1321,6 +1391,7 @@ export default function App() {
         {showVideo && (
           <VideoPlayer song={currentSong} isOpen={showVideo} isPlaying={isPlaying}
             audioMode={audioMode}
+            playlist={queue}
             onClose={() => setShowVideo(false)} onTogglePlay={togglePlayPause}
             onNext={playNext} onPrev={playPrevious}
             onToggleAudioMode={toggleVideoAudioMode}
@@ -1372,6 +1443,10 @@ export default function App() {
 
       {/* ── Settings ── */}
       <SettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)}
+        appIconImage={appIconImage} appIconVideo={appIconVideo}
+        onAppIconPick={() => appIconFileRef.current?.click()}
+        onAppIconRemove={async () => { if (appIconObjectUrl) URL.revokeObjectURL(appIconObjectUrl); setAppIconObjectUrl(''); setAppIconImage(''); setAppIconVideo(''); await saveSetting('app_icon_media', null); showToast('Icone removido', 'info'); }}
+        appIconFileRef={appIconFileRef} onAppIconFileChange={handleAppIconFileChange}
         bgImage={bgImage} bgVideo={bgVideo} bgOpacity={bgOpacity} bgBlur={bgBlur}
         onBgOpacityChange={v => { setBgOpacity(v); saveSetting('bg_opacity', v); }}
         onBgBlurChange={v => { setBgBlur(v); saveSetting('bg_blur', v); }}
@@ -1379,7 +1454,7 @@ export default function App() {
         onBgRemove={async () => { if (bgObjectUrl) URL.revokeObjectURL(bgObjectUrl); setBgObjectUrl(''); setBgImage(''); setBgVideo(''); await saveSetting('custom_theme', null); showToast('Fundo removido', 'info'); }}
         bgFileRef={bgFileRef} onBgFileChange={handleBgFileChange}
         accentColor={accentColor} customColor={customColor}
-        onAccentChange={setAccentColor} onCustomColorChange={setCustomColor}
+        onAccentChange={setAccentColor} onCustomColorChange={v => { setCustomColor(v); if (settingsLoaded) saveSetting('custom_color', v); }}
         uiSize={uiSize} onUISizeChange={setUISize}
         eqPreset={eqPreset} onEQChange={setEqPreset}
         notifGranted={perms.notifications === 'granted'}
@@ -1389,7 +1464,7 @@ export default function App() {
 
       <PermissionsModal isOpen={showPermModal}
         onRequest={async () => { await requestAll(); localStorage.setItem('perms_asked','1'); setShowPermModal(false); showToast('Permissões ativadas!','success'); }}
-        onSkip={() => { localStorage.setItem('perms_asked','1'); setShowPermModal(false); }}/>
+        onSkip={async () => { await markPermissionsAsked(); setShowPermModal(false); }}/>
 
       <AnimatePresence>{toast && <Toast msg={toast.msg} type={toast.type}/>}</AnimatePresence>
     </div>
@@ -1406,6 +1481,63 @@ function QuickCard({ title, count, color, icon, onClick }: { title:string; count
     </button>
   );
 }
+
+function BrandIcon({ image, video, className }: { image: string; video: string; className?: string }) {
+  if (video) {
+    return <video src={video} autoPlay loop muted playsInline className={`${className || ''} rounded-xl object-cover`} />;
+  }
+  if (image) {
+    return <img src={image} alt="" className={`${className || ''} rounded-xl object-cover`} />;
+  }
+  return <GatoIcon className={className} />;
+}
+
+const WebPortal = memo(function WebPortal({
+  currentSong, frameUrl, onFrameUrlChange,
+}: {
+  currentSong: Song | null;
+  frameUrl: string;
+  onFrameUrlChange: (url: string) => void;
+}) {
+  const [query, setQuery] = useState(currentSong ? `${currentSong.title} ${currentSong.artist}` : '');
+  const youtubeLogin = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fm.youtube.com%2Ffeed%2Fplaylists';
+
+  const openYoutube = () => onFrameUrlChange('https://m.youtube.com/feed/playlists');
+  const openBrave = () => {
+    const q = encodeURIComponent(query.trim() || 'musicas youtube playlists');
+    onFrameUrlChange(`https://search.brave.com/search?q=${q}&source=web`);
+  };
+  const openExternal = (url = frameUrl) => window.open(url, '_blank', 'noopener,noreferrer');
+
+  return (
+    <motion.div key="web" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="space-y-3">
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+        <div className="mb-3 flex items-center gap-2">
+          <button onClick={openYoutube} className="flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-2 text-xs font-bold">
+            <Youtube size={14}/> YouTube
+          </button>
+          <button onClick={openBrave} className="flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-2 text-xs font-bold">
+            <Globe2 size={14}/> Brave AI
+          </button>
+          <button onClick={() => openExternal(youtubeLogin)} className="ml-auto rounded-xl px-3 py-2 text-xs font-bold text-white" style={{backgroundColor:'var(--accent,#e11d48)'}}>
+            Login Google
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar no Brave ou YouTube"
+            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs outline-none"/>
+          <button onClick={openBrave} className="rounded-xl bg-white/10 px-3 py-2 text-xs font-bold">Buscar</button>
+          <button onClick={() => openExternal()} className="rounded-xl bg-white/10 px-3 py-2 text-xs font-bold"><ExternalLink size={14}/></button>
+        </div>
+      </div>
+      <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black" style={{ height: 'calc(100dvh - 260px)', minHeight: 360 }}>
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-black/70 to-transparent" />
+        <iframe src={frameUrl} className="h-full w-full" title="YouTube e Brave" referrerPolicy="strict-origin-when-cross-origin" />
+      </div>
+    </motion.div>
+  );
+});
+
 function SongCard({ song, isFav, onClick, onFav }: { song:Song; isFav?:boolean; onClick:()=>void; onFav:(e:React.MouseEvent)=>void }) {
   return (
     <div className="group cursor-pointer" onClick={onClick}>
@@ -1424,10 +1556,10 @@ function SongCard({ song, isFav, onClick, onFav }: { song:Song; isFav?:boolean; 
     </div>
   );
 }
-function SongRow({ song, isFav, isDownloading, dlPct, onClick, onFav, onDownload, isActive, isLoading }: {
+function SongRow({ song, isFav, isDownloading, dlPct, onClick, onFav, onDownload, isActive, isLoading, favoriteAction = 'heart' }: {
   song:Song; isFav?:boolean; isDownloading?:boolean; dlPct?:number;
   onClick:()=>void; onFav:(e:React.MouseEvent)=>void; onDownload?:(e:React.MouseEvent)=>void;
-  isActive?:boolean; isLoading?:boolean;
+  isActive?:boolean; isLoading?:boolean; favoriteAction?: 'heart' | 'delete';
 }) {
   return (
     <div onClick={onClick} className="flex items-center gap-3 p-2 rounded-xl transition-colors group cursor-pointer relative overflow-hidden hover:bg-brand-gray/50 active:bg-brand-gray/70"
@@ -1453,10 +1585,13 @@ function SongRow({ song, isFav, isDownloading, dlPct, onClick, onFav, onDownload
         )}
       </div>
       <span className="text-[10px] text-zinc-600 hidden sm:block flex-shrink-0">{song.duration}</span>
-      <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+      <div className={`flex items-center transition-opacity flex-shrink-0 ${favoriteAction === 'delete' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
         <button onClick={onFav} className={`w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/10 ${isFav?'':'text-zinc-600'}`}
-          style={isFav?{color:'var(--accent,#e11d48)'}:{}}>
-          <Heart size={13} className={isFav?'fill-current':''}/>
+          style={isFav && favoriteAction !== 'delete'?{color:'var(--accent,#e11d48)'}:{}}>
+          {favoriteAction === 'delete'
+            ? <Trash2 size={13} className="text-red-400"/>
+            : <Heart size={13} className={isFav?'fill-current':''}/>
+          }
         </button>
         {onDownload&&!song.isDownloaded&&!song.isLocal&&(
           <button onClick={onDownload} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/10 text-zinc-600 hover:text-white disabled:opacity-40" disabled={isDownloading}>

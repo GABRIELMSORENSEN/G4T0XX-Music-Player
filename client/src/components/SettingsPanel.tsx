@@ -20,6 +20,10 @@ export type UISize = 'small' | 'normal' | 'large';
 
 interface Props {
   isOpen: boolean; onClose: () => void;
+  appIconImage: string; appIconVideo: string;
+  onAppIconPick: () => void; onAppIconRemove: () => void;
+  appIconFileRef: React.RefObject<HTMLInputElement | null>;
+  onAppIconFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   bgImage: string; bgVideo: string; bgOpacity: number; bgBlur: number;
   onBgOpacityChange: (v: number) => void; onBgBlurChange: (v: number) => void;
   onBgPick: () => void; onBgRemove: () => void;
@@ -33,7 +37,8 @@ interface Props {
 }
 
 export function SettingsPanel({
-  isOpen, onClose, bgImage, bgVideo, bgOpacity, bgBlur,
+  isOpen, onClose, appIconImage, appIconVideo, onAppIconPick, onAppIconRemove, appIconFileRef, onAppIconFileChange,
+  bgImage, bgVideo, bgOpacity, bgBlur,
   onBgOpacityChange, onBgBlurChange, onBgPick, onBgRemove, bgFileRef, onBgFileChange,
   accentColor, customColor, onAccentChange, onCustomColorChange,
   uiSize, onUISizeChange, eqPreset, onEQChange, notifGranted, onRequestPerms,
@@ -67,6 +72,33 @@ export function SettingsPanel({
             </div>
 
             <div className="overflow-y-auto px-5 py-4 space-y-6" style={{ maxHeight: 'calc(92dvh - 80px)', WebkitOverflowScrolling: 'touch' }}>
+
+              <Section icon={<Image size={14}/>} title="ICONE DO APP">
+                <div className="mb-3 flex items-center gap-3 rounded-2xl bg-white/5 p-3">
+                  <div className="h-12 w-12 overflow-hidden rounded-2xl bg-black flex-shrink-0">
+                    {appIconVideo
+                      ? <video src={appIconVideo} autoPlay loop muted playsInline className="h-full w-full object-cover" />
+                      : appIconImage
+                        ? <img src={appIconImage} className="h-full w-full object-cover" />
+                        : <div className="h-full w-full" style={{ backgroundColor: 'var(--accent,#e11d48)' }} />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-bold text-zinc-300">Logo dentro do app</p>
+                    <p className="text-[10px] text-zinc-500">Imagem, GIF ou video.</p>
+                  </div>
+                </div>
+                <button onClick={onAppIconPick}
+                  className="w-full py-3 bg-white/8 border border-dashed border-white/15 rounded-2xl text-sm text-zinc-400 hover:bg-white/12 flex items-center justify-center gap-2 mb-2">
+                  <Image size={15}/> Escolher icone
+                </button>
+                <input ref={appIconFileRef} type="file" accept="image/*,video/*,.gif" className="hidden" onChange={onAppIconFileChange}/>
+                {(appIconImage||appIconVideo)&&(
+                  <button onClick={onAppIconRemove}
+                    className="w-full py-2.5 bg-white/5 rounded-2xl text-sm text-zinc-400 hover:bg-white/10 flex items-center justify-center gap-2">
+                    <Trash2 size={13}/> Remover icone
+                  </button>
+                )}
+              </Section>
 
               {/* UI Size */}
               <Section icon={<Monitor size={14}/>} title="TAMANHO DA INTERFACE">

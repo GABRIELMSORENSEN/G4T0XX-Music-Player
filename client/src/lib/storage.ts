@@ -52,16 +52,26 @@ export const savePlaylist   = async (p: Playlist)       => { const db = await in
 export const getPlaylists   = async (): Promise<Playlist[]> => { const db = await initDB(); return db.getAll('playlists'); };
 export const deletePlaylist = async (id: string)        => { const db = await initDB(); await db.delete('playlists', id); };
 
-export const saveLocalSong  = async (song: Song) => { const db = await initDB(); await db.put('local', song); };
+export const saveLocalSong  = async (song: Song) => {
+  const db = await initDB();
+  const localSong = { ...song, isLocal: true };
+  await db.put('local', localSong);
+  await db.put('songs', localSong);
+};
 export const getLocalSongs  = async (): Promise<Song[]> => { const db = await initDB(); return db.getAll('local'); };
-export const deleteLocalSong = async (id: string) => { const db = await initDB(); await db.delete('local', id); };
+export const deleteLocalSong = async (id: string) => { const db = await initDB(); await db.delete('local', id); await db.delete('songs', id); };
 
 export const addToFavorites = async (song: Song): Promise<boolean> => {
   const db = await initDB();
   const existing = await db.get('favorites', song.id);
   if (existing) { await db.delete('favorites', song.id); return false; }
-  await db.put('favorites', { id: song.id, title: song.title, artist: song.artist, thumbnail: song.thumbnail, duration: song.duration, url: song.url, timestamp: Date.now(), isDownloaded: song.isDownloaded || false, isLocal: song.isLocal || false });
+  await db.put('favorites', { ...song, timestamp: Date.now(), isDownloaded: !!song.isDownloaded, isLocal: !!song.isLocal });
   return true;
+};
+
+export const removeFavorite = async (id: string) => {
+  const db = await initDB();
+  await db.delete('favorites', id);
 };
 
 export const getFavorites = async (): Promise<Song[]> => {
@@ -73,11 +83,11 @@ export const addToRecents = async (song: Song) => {
   try {
     const db = await initDB();
     const all = await db.getAll('recents');
-    if (all.length >= 50) {
+    if (all.filter(s => s.id !== song.id).length >= 50) {
       const oldest = all.sort((a, b) => a.timestamp - b.timestamp)[0];
       await db.delete('recents', oldest.id);
     }
-    await db.put('recents', { id: song.id, title: song.title, artist: song.artist, thumbnail: song.thumbnail, duration: song.duration, url: song.url, timestamp: Date.now(), isDownloaded: song.isDownloaded || false, isLocal: song.isLocal || false });
+    await db.put('recents', { ...song, timestamp: Date.now(), isDownloaded: !!song.isDownloaded, isLocal: !!song.isLocal });
   } catch {}
 };
 

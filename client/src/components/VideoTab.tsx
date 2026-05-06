@@ -1,15 +1,25 @@
-import React, { useRef } from 'react';
-import { Maximize2, Play, Video } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Maximize2, Play, Video, X } from 'lucide-react';
 import type { Song } from '../lib/storage';
+import { buildYoutubeEmbedUrl } from '../lib/youtubePlayer';
 
 interface Props {
   song: Song | null;
   startAt: number;
+  playlist?: Song[];
+  autoplay?: boolean;
   onOpenPlayer: () => void;
 }
 
-export function VideoTab({ song, startAt, onOpenPlayer }: Props) {
+export function VideoTab({ song, startAt, playlist = [], autoplay = false, onOpenPlayer }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const syncFullscreen = () => setIsFullscreen(document.fullscreenElement === wrapRef.current);
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreen);
+  }, []);
 
   const enterFullscreen = () => {
     const el = wrapRef.current;
@@ -18,6 +28,9 @@ export function VideoTab({ song, startAt, onOpenPlayer }: Props) {
       if (document.fullscreenElement) document.exitFullscreen();
       else el.requestFullscreen();
     } catch {}
+  };
+  const exitFullscreen = () => {
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch {}
   };
 
   if (!song || song.isLocal) {
@@ -47,9 +60,14 @@ export function VideoTab({ song, startAt, onOpenPlayer }: Props) {
         </div>
       </div>
 
-      <div ref={wrapRef} className="overflow-hidden rounded-lg bg-black" style={{ aspectRatio: '16/9' }}>
+      <div ref={wrapRef} className="relative overflow-hidden rounded-lg bg-black" style={{ aspectRatio: '16/9' }}>
+        {isFullscreen && (
+          <button onClick={exitFullscreen} className="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-2 text-xs font-bold text-white">
+            <X size={14} /> Sair
+          </button>
+        )}
         <iframe
-          src={`https://www.youtube.com/embed/${song.id}?autoplay=0&controls=1&modestbranding=1&rel=0&playsinline=1&start=${Math.max(0, Math.floor(startAt || 0))}`}
+          src={buildYoutubeEmbedUrl(song.id, { autoplay, startAt, playlist })}
           className="h-full w-full"
           allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
           allowFullScreen

@@ -5,11 +5,13 @@ import {
   Maximize2, ChevronDown, Headphones, PictureInPicture2,
 } from 'lucide-react';
 import type { Song } from '../lib/storage';
+import { buildYoutubeEmbedUrl } from '../lib/youtubePlayer';
 
 interface Props {
   song: Song | null;
   isOpen: boolean;
   isPlaying: boolean;
+  playlist?: Song[];
   audioMode: boolean;          // true = só áudio (esconde vídeo)
   onClose: () => void;
   onTogglePlay: () => void;
@@ -20,10 +22,18 @@ interface Props {
 }
 
 export const VideoPlayer = memo(function VideoPlayer({
-  song, isOpen, isPlaying, audioMode,
+  song, isOpen, isPlaying, audioMode, playlist = [],
   onClose, onTogglePlay, onNext, onPrev, onToggleAudioMode, onEnterPip,
 }: Props) {
   const frameWrapRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const syncFullscreen = () => setIsFullscreen(document.fullscreenElement === frameWrapRef.current);
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreen);
+  }, []);
+
   if (!song || !isOpen) return null;
 
   const videoId = song.id;
@@ -34,6 +44,9 @@ export const VideoPlayer = memo(function VideoPlayer({
       if (document.fullscreenElement) document.exitFullscreen();
       else el.requestFullscreen();
     } catch {}
+  };
+  const exitFullscreen = () => {
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch {}
   };
 
   return (
@@ -87,9 +100,14 @@ export const VideoPlayer = memo(function VideoPlayer({
           </div>
         ) : (
           // Modo vídeo — embeds YouTube IFrame (visível só aqui)
-          <div ref={frameWrapRef} className="w-full bg-black" style={{ aspectRatio: '16/9' }}>
+          <div ref={frameWrapRef} className="relative w-full bg-black" style={{ aspectRatio: '16/9' }}>
+            {isFullscreen && (
+              <button onClick={exitFullscreen} className="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-2 text-xs font-bold text-white">
+                <X size={14} /> Sair
+              </button>
+            )}
             <iframe
-              src={`https://www.youtube.com/embed/${videoId}?autoplay=1&controls=1&modestbranding=1&rel=0&playsinline=1&enablejsapi=1`}
+              src={buildYoutubeEmbedUrl(videoId, { autoplay: true, playlist })}
               className="w-full h-full"
               allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
