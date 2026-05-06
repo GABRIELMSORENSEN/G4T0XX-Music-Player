@@ -59,7 +59,7 @@ Um **aplicativo nativo de streaming de música** construído com React 19, TypeS
 ## 🚀 Como Iniciar
 
 ### Instalação (APK)
-1. Baixe o APK mais recente na [Página de Releases](https://github.com/POLIGONON/g4t0xx-music-player/releases).
+1. Baixe o APK mais recente na [Página de Releases](https://github.com/GABRIELMSORENSEN/G4T0XX-Music-Player/releases/tag/V1.0).
 2. Ative a instalação de fontes desconhecidas no seu Android.
 3. Instale e aproveite suas músicas favoritas!
 
