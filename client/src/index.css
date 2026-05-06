@@ -1,0 +1,107 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-brand-red: #e11d48;
+  --color-brand-black: #000000;
+  --color-brand-dark: #121212;
+  --color-brand-gray: #1e1e1e;
+}
+
+@layer base {
+  * {
+    -webkit-tap-highlight-color: transparent;
+    box-sizing: border-box;
+  }
+  html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: #000;
+    color: white;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin: 0;
+    padding: 0;
+  }
+  #root {
+    height: 100dvh;
+    height: -webkit-fill-available;
+    width: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+button, nav { user-select: none; -webkit-user-select: none; }
+
+/* xs breakpoint for very small screens */
+@media (min-width: 360px) {
+  .xs\:block { display: block !important; }
+}
+
+/* ── Playback speed slider ───────────────────────────────────────────── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e11d48;
+  cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.2);
+  transition: box-shadow 0.15s;
+}
+
+input[type="range"]::-webkit-slider-thumb:active {
+  box-shadow: 0 0 0 6px rgba(225, 29, 72, 0.3);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e11d48;
+  cursor: pointer;
+  border: none;
+}
+
+/* ── Accent color support ─────────────────────────────────────────────── */
+:root { --accent: #e11d48; --accent-rgb: 225,29,72; }
+
+/* ── Range sliders ────────────────────────────────────────────────────── */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  height: 6px; border-radius: 9999px; outline: none; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent, #e11d48); cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb,225,29,72),0.2);
+  transition: box-shadow 0.15s;
+}
+input[type="range"]::-webkit-slider-thumb:active {
+  box-shadow: 0 0 0 6px rgba(var(--accent-rgb,225,29,72),0.3);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent, #e11d48); cursor: pointer; border: none;
+}
+
+/* ── Safe area padding for bottom ─────────────────────────────────────── */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }

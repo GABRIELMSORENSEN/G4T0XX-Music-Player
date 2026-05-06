@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">G4T0XX Music Player</string>
+    <string name="title_activity_main">G4T0XX Music Player</string>
+    <string name="package_name">com.g4t0xx.musicplayer</string>
+    <string name="custom_url_scheme">com.g4t0xx.musicplayer</string>
+</resources>
