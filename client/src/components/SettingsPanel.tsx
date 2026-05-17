@@ -13,7 +13,7 @@ export const ACCENT_COLORS = [
 
 export const EQ_PRESETS = [
   'Normal', 'Bass Boost', 'Treble', 'Vocal', 'Club', 'Rock', 'Pop',
-  '8D Audio', '9D Audio', 'Deep Bass', 'Soft',
+  '8D Audio', '9D Audio', 'Deep Bass', 'Soft', 'Night', 'Live',
 ];
 
 export type UISize = 'small' | 'normal' | 'large';
@@ -33,6 +33,7 @@ interface Props {
   onAccentChange: (hex: string) => void; onCustomColorChange: (hex: string) => void;
   uiSize: UISize; onUISizeChange: (s: UISize) => void;
   eqPreset: string; onEQChange: (preset: string) => void;
+  bitDepth: number; onBitDepthChange: (bits: number) => void;
   notifGranted: boolean; onRequestPerms: () => void;
 }
 
@@ -41,7 +42,8 @@ export function SettingsPanel({
   bgImage, bgVideo, bgOpacity, bgBlur,
   onBgOpacityChange, onBgBlurChange, onBgPick, onBgRemove, bgFileRef, onBgFileChange,
   accentColor, customColor, onAccentChange, onCustomColorChange,
-  uiSize, onUISizeChange, eqPreset, onEQChange, notifGranted, onRequestPerms,
+  uiSize, onUISizeChange, eqPreset, onEQChange, bitDepth, onBitDepthChange,
+  notifGranted, onRequestPerms,
 }: Props) {
   const [storageText, setStorageText] = useState('');
 
@@ -169,9 +171,26 @@ export function SettingsPanel({
                     {eqPreset==='8D Audio'?'Efeito de som ao redor (pan automático + reverb)':'Efeito 9D — pan + reverb + tremolo intenso'}
                   </p>
                 )}
+                <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-bold text-zinc-300">Bits do som</span>
+                    <span className="text-xs font-black" style={{color:'var(--accent,#e11d48)'}}>{bitDepth} bit</span>
+                  </div>
+                  <div className="mb-3 grid grid-cols-4 gap-2">
+                    {[8, 10, 12, 16].map(bits => (
+                      <button key={bits} onClick={() => onBitDepthChange(bits)}
+                        className={`rounded-xl py-2 text-xs font-bold ${bitDepth===bits?'text-white':'bg-white/8 text-zinc-400'}`}
+                        style={bitDepth===bits?{backgroundColor:'var(--accent,#e11d48)'}:{}}>
+                        {bits} bit
+                      </button>
+                    ))}
+                  </div>
+                  <SliderRow label="Custom" value={bitDepth} min={4} max={24} unit=" bit" onChange={onBitDepthChange}/>
+                  <p className="text-[10px] text-zinc-500">8/10/12 bit simulam bitcrusher. 16+ mantem o audio limpo.</p>
+                </div>
               </Section>
 
-              {/* Permissions */}
+              {/* Status */}
               <Section icon={<Check size={14}/>} title="PERMISSÕES">
                 <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl mb-2">
                   <span className="text-xs text-zinc-300">Notificações</span>
@@ -189,7 +208,7 @@ export function SettingsPanel({
                 <div className="mt-3 bg-green-500/10 border border-green-500/20 rounded-xl p-3 space-y-1 text-xs">
                   <p className="font-bold text-green-400">✓ Áudio nativo — toca com tela desligada</p>
                   <p className="font-bold text-blue-400">✓ MediaSession — controles no shade</p>
-                  <p className="font-bold text-yellow-400">✓ Multi-provider: Piped + Invidious + Cobalt</p>
+                  <p className="font-bold text-yellow-400">✓ NewPipe local + ExoPlayer</p>
                   {storageText && <p className="font-bold text-zinc-300">Offline: {storageText}</p>}
                 </div>
               </Section>

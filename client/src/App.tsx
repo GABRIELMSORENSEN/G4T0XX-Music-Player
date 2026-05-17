@@ -15,8 +15,7 @@ import {
   deletePlaylist, Playlist, clearRecents, getLocalSongs, removeFavorite,
 } from './lib/storage';
 import {
-  searchYoutube, getAudioStream, downloadAudioOffline,
-  getInstance, invalidateInstance, fetchJSON,
+  searchYoutube, getAudioStream, downloadAudioOffline, importYoutubePlaylist,
 } from './lib/streams';
 import { GatoIcon } from './components/GatoIcon';
 import { LyricsPanel } from './components/LyricsPanel';
@@ -31,6 +30,20 @@ import { useMediaSession } from './hooks/useMediaSession';
 import { setNativeEqualizerPreset } from './lib/nativeAudioEffects';
 import { isNativeAndroid, prepareNativeAudio } from './lib/nativeLocalMusic';
 import { mergeOfflineAndLocalSongs } from './lib/musicLibrary';
+import { nativeDownloadQuery } from './lib/downloadPortal';
+import { enterNativePip, setNativePipAuto } from './lib/nativePip';
+import {
+  getNativeYouTubeState,
+  isNativeYouTubeSong,
+  pauseNativeYouTubeAudio,
+  playNativeYouTubeAudio,
+  prefetchNativeYouTubeAudio,
+  resumeNativeYouTubeAudio,
+  seekNativeYouTubeAudio,
+  setNativeYouTubeSpeed,
+  setNativeYouTubeVolume,
+  stopNativeYouTubeAudio,
+} from './lib/nativeYouTubeAudio';
 
 function fmtSecs(s: number): string {
   if (!s || isNaN(s) || s < 0) return '0:00';
@@ -312,6 +325,7 @@ export default function App() {
   const [customColor, setCustomColor] = useState('#06b6d4');
   const [uiSize, setUISize]           = useState<UISize>('normal');
   const [eqPreset, setEqPreset]       = useState('Normal');
+  const [bitDepth, setBitDepth]       = useState(16);
 
   // Download / favs
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
@@ -329,7 +343,7 @@ export default function App() {
   const [newPlName, setNewPlName]   = useState('');
   const [showNewPl, setShowNewPl]   = useState(false);
   const [copied, setCopied]         = useState(false);
-  const [webPortalUrl, setWebPortalUrl] = useState('https://m.youtube.com/feed/playlists');
+  const [downloaderSong, setDownloaderSong] = useState<Song|null>(null);
 
   // Refs
   const audioRef    = useRef<HTMLAudioElement>(null);
@@ -341,6 +355,7 @@ export default function App() {
   const eqSrcRef    = useRef<MediaElementAudioSourceNode|null>(null);
   const eqNodeRef   = useRef<any>(null);
   const streamSongRef = useRef<string | null>(null);
+  const shouldAutoplayCurrentRef = useRef(true);
 
   const { perms, requestAll } = usePermissions();
 
@@ -351,12 +366,12 @@ export default function App() {
     duration,
     playbackSpeed,
     {
-      onPlay:      () => { audioRef.current?.play().catch(() => {}); setIsPlaying(true); },
-      onPause:     () => { audioRef.current?.pause(); setIsPlaying(false); },
+      onPlay:      () => { isNativeYouTubeSong(currentSong) ? resumeNativeYouTubeAudio().catch(() => {}) : audioRef.current?.play().catch(() => {}); setIsPlaying(true); },
+      onPause:     () => { isNativeYouTubeSong(currentSong) ? pauseNativeYouTubeAudio().catch(() => {}) : audioRef.current?.pause(); setIsPlaying(false); },
       onNext:      () => playNext(),
       onPrev:      () => playPrevious(),
-      onSeek:      (t) => { if (audioRef.current) { audioRef.current.currentTime = t; setProgress(t); } },
-      getPosition: () => audioRef.current?.currentTime ?? 0,
+      onSeek:      (t) => { if (isNativeYouTubeSong(currentSong)) seekNativeYouTubeAudio(t).catch(() => {}); else if (audioRef.current) audioRef.current.currentTime = t; setProgress(t); },
+      getPosition: () => isNativeYouTubeSong(currentSong) ? progress : (audioRef.current?.currentTime ?? 0),
     }
   );
 
@@ -390,7 +405,7 @@ export default function App() {
         eqCtxRef.current.resume().catch(() => {});
       }
       // Mantém o áudio tocando quando a tela desliga
-      if (document.visibilityState === 'hidden' && audioRef.current && isPlaying) {
+      if (document.visibilityState === 'hidden' && audioRef.current && isPlaying && !isNativeYouTubeSong(currentSong)) {
         audioRef.current.play().catch(() => {});
       }
     };
@@ -415,11 +430,11 @@ export default function App() {
     // Controles via notificação / botões de hardware
     (window as any).__musicControl = (action: string) => {
       switch (action) {
-        case 'play':  audioRef.current?.play().catch(()=>{}); setIsPlaying(true);  break;
-        case 'pause': audioRef.current?.pause(); setIsPlaying(false); break;
+        case 'play':  isNativeYouTubeSong(currentSong) ? resumeNativeYouTubeAudio().catch(()=>{}) : audioRef.current?.play().catch(()=>{}); setIsPlaying(true);  break;
+        case 'pause': isNativeYouTubeSong(currentSong) ? pauseNativeYouTubeAudio().catch(()=>{}) : audioRef.current?.pause(); setIsPlaying(false); break;
         case 'next':  playNext();    break;
         case 'prev':  playPrevious(); break;
-        case 'stop':  audioRef.current?.pause(); setIsPlaying(false); stopService(); break;
+        case 'stop':  isNativeYouTubeSong(currentSong) ? stopNativeYouTubeAudio().catch(()=>{}) : audioRef.current?.pause(); setIsPlaying(false); stopService(); break;
       }
     };
     (window as any).__onAppPause  = () => silentRef.current?.play().catch(() => {});
@@ -458,6 +473,7 @@ export default function App() {
       const op  = await getSetting('bg_opacity');      if (typeof op === 'number') setBgOpacity(op);
       const bl  = await getSetting('bg_blur');         if (typeof bl === 'number') setBgBlur(bl);
       const eq  = await getSetting('eq_preset');       if (eq) setEqPreset(eq);
+      const bits = await getSetting('audio_bit_depth'); if (typeof bits === 'number') setBitDepth(bits);
     } finally {
       setSettingsLoaded(true);
     }
@@ -465,14 +481,57 @@ export default function App() {
 
   const loadLibrary = async () => {
     const [r,f,p,s,l] = await Promise.all([getRecents(), getFavorites(), getPlaylists(), getSongs(), getLocalSongs()]);
-    setRecents(r); setFavorites(f); setPlaylists(p);
-    setOfflineSongs(mergeOfflineAndLocalSongs(s, l));
+    const mergedSongs = mergeOfflineAndLocalSongs(s, l);
+    const byId = new Map<string, Song>(mergedSongs.map(song => [song.id, song]));
+    const hydratedPlaylists = p.map(pl => ({
+      ...pl,
+      cover: pl.cover || pl.songs[0]?.thumbnail,
+      songs: pl.songs.map(song => ({ ...song, ...(byId.get(song.id) || {}) })),
+    }));
+    setRecents(r); setFavorites(f); setPlaylists(hydratedPlaylists);
+    setOfflineSongs(mergedSongs);
     setFavoritedIds(new Set(f.map((x:Song) => x.id)));
   };
 
   const showToast = useCallback((msg: string, type: 'success'|'error'|'info' = 'info') => {
     setToast({ msg, type }); setTimeout(() => setToast(null), 3500);
   }, []);
+
+  const closeTransientOverlays = useCallback(() => {
+    setShowExpanded(false);
+    setShowLyrics(false);
+    setShowSpeedPanel(false);
+    setShowSettings(false);
+    setShowPermModal(false);
+    setShowVideo(false);
+    setShowLocal(false);
+    setSelectedPlaylist(null);
+    setShowNewPl(false);
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch {}
+  }, []);
+
+  useEffect(() => {
+    setNativePipAuto(isFloating && !!currentSong).catch(() => {});
+  }, [isFloating, currentSong?.id]);
+
+  useEffect(() => {
+    if (!selectedPlaylist) return;
+    setSelectedPlaylist(playlists.find(pl => pl.id === selectedPlaylist.id) || null);
+  }, [playlists, selectedPlaylist?.id]);
+
+  useEffect(() => {
+    const closeOnBackground = () => {
+      if (document.visibilityState === 'hidden') closeTransientOverlays();
+    };
+    document.addEventListener('visibilitychange', closeOnBackground);
+    document.addEventListener('pause', closeTransientOverlays);
+    window.addEventListener('pagehide', closeTransientOverlays);
+    return () => {
+      document.removeEventListener('visibilitychange', closeOnBackground);
+      document.removeEventListener('pause', closeTransientOverlays);
+      window.removeEventListener('pagehide', closeTransientOverlays);
+    };
+  }, [closeTransientOverlays]);
 
   // ── WakeLock ─────────────────────────────────────────────────────────────
   const acquireWakeLock = useCallback(async () => {
@@ -485,6 +544,7 @@ export default function App() {
   // ── ForegroundService ─────────────────────────────────────────────────────
   const startService = useCallback((song: Song, playing: boolean) => {
     if (!(window as any).Capacitor?.isNativePlatform?.()) return;
+    if (isNativeYouTubeSong(song)) return;
     try {
       const posMs = Math.round((audioRef.current?.currentTime || 0) * 1000);
       const durMs = Math.round((audioRef.current?.duration    || 0) * 1000);
@@ -511,22 +571,24 @@ export default function App() {
       title: song.title, artist: song.artist, album: 'G4T0XX Music Player',
       artwork: [{ src: artUrl, sizes: '480x360', type: 'image/jpeg' }],
     });
-    navigator.mediaSession.setActionHandler('play',           () => { audioRef.current?.play().catch(()=>{}); setIsPlaying(true); });
-    navigator.mediaSession.setActionHandler('pause',          () => { audioRef.current?.pause(); setIsPlaying(false); });
+    navigator.mediaSession.setActionHandler('play',           () => { isNativeYouTubeSong(song) ? resumeNativeYouTubeAudio().catch(()=>{}) : audioRef.current?.play().catch(()=>{}); setIsPlaying(true); });
+    navigator.mediaSession.setActionHandler('pause',          () => { isNativeYouTubeSong(song) ? pauseNativeYouTubeAudio().catch(()=>{}) : audioRef.current?.pause(); setIsPlaying(false); });
     navigator.mediaSession.setActionHandler('previoustrack',  () => playPrevious());
     navigator.mediaSession.setActionHandler('nexttrack',      () => playNext());
     navigator.mediaSession.setActionHandler('seekto', d => {
-      if (d.seekTime != null && audioRef.current) audioRef.current.currentTime = d.seekTime;
+      if (d.seekTime != null && isNativeYouTubeSong(song)) seekNativeYouTubeAudio(d.seekTime).catch(()=>{});
+      else if (d.seekTime != null && audioRef.current) audioRef.current.currentTime = d.seekTime;
     });
     navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
   }, [playNext, playPrevious]);
 
-  // ── Load stream via getAudioStream (Piped/Invidious/Cobalt) ──────────────
+  // ── Load stream via NewPipe nativo no Android ────────────────────────────
   // Este é o ponto crítico: usa <audio> nativo em vez de IFrame YT
   // <audio> nativo continua tocando com tela desligada — IFrame YT pausa
   useEffect(() => {
     if (!currentSong) {
       setAudioUrl(prev => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return null; });
+      stopNativeYouTubeAudio().catch(() => {});
       return;
     }
     if (audioRef.current) {
@@ -567,7 +629,42 @@ export default function App() {
       return;
     }
 
-    // Online → getAudioStream (Piped → Invidious → Cobalt)
+    // Online fallback: NewPipe nativo, sem servidores externos de stream
+    if (isNativeYouTubeSong(currentSong)) {
+      let cancelled = false;
+      setAudioUrl(null);
+      const shouldAutoplay = shouldAutoplayCurrentRef.current;
+      shouldAutoplayCurrentRef.current = true;
+      if (!shouldAutoplay) {
+        setAudioLoading(false);
+        return () => { cancelled = true; };
+      }
+      (async () => {
+        try {
+          await playNativeYouTubeAudio(currentSong, {
+            volume: isMuted ? 0 : volume,
+            speed: playbackSpeed,
+          });
+          if (!cancelled) {
+            setAudioLoading(false);
+            const idx = queue.findIndex(s => s.id === currentSong.id);
+            const nextIds = queue
+              .slice(Math.max(0, idx + 1), idx + 4)
+              .filter(s => !s.isLocal && !s.isDownloaded)
+              .map(s => s.id);
+            prefetchNativeYouTubeAudio(nextIds);
+          }
+        } catch (err: any) {
+          if (!cancelled) {
+            setAudioLoading(false);
+            showToast(err?.message || 'NewPipe falhou para esta musica.', 'error');
+            playNext();
+          }
+        }
+      })();
+      return () => { cancelled = true; };
+    }
+
     let cancelled = false;
     (async () => {
       try {
@@ -579,7 +676,7 @@ export default function App() {
       } catch (err: any) {
         if (!cancelled) {
           setAudioLoading(false);
-          showToast('Todos os servidores falharam para esta música.', 'error');
+          showToast('NewPipe nao conseguiu abrir esta musica.', 'error');
           playNext();
         }
       }
@@ -606,6 +703,11 @@ export default function App() {
   }, [playbackSpeed, isMuted, volume]);
 
   useEffect(() => {
+    if (isNativeYouTubeSong(currentSong)) {
+      if (isPlaying) resumeNativeYouTubeAudio().catch(() => {});
+      else pauseNativeYouTubeAudio().catch(() => {});
+      return;
+    }
     if (!audioUrl || !audioRef.current) return;
     if (isPlaying) {
       playAudio();
@@ -614,9 +716,37 @@ export default function App() {
     }
   }, [isPlaying, audioUrl, playAudio]);
 
+  useEffect(() => {
+    if (!isNativeYouTubeSong(currentSong)) return;
+    let stopped = false;
+    let endedHandled = false;
+    let lastError = '';
+    const sync = async () => {
+      try {
+        const state = await getNativeYouTubeState();
+        if (stopped || state.videoId !== currentSong?.id) return;
+        setProgress((state.positionMs || 0) / 1000);
+        if (state.durationMs > 0) setDuration(state.durationMs / 1000);
+        setAudioLoading(!!state.loading);
+        if (state.error && state.error !== lastError) {
+          lastError = state.error;
+          showToast(state.error, 'error');
+        }
+        if (state.ended && !endedHandled) {
+          endedHandled = true;
+          playNext();
+        }
+      } catch {}
+    };
+    sync();
+    const id = setInterval(sync, 1000);
+    return () => { stopped = true; clearInterval(id); };
+  }, [currentSong?.id, playNext, showToast]);
+
   // ── ForegroundService + WakeLock ─────────────────────────────────────────
   useEffect(() => {
     if (!currentSong) return;
+    if (isNativeYouTubeSong(currentSong)) return;
     startService(currentSong, isPlaying);
     if (isPlaying) {
       acquireWakeLock();
@@ -627,20 +757,23 @@ export default function App() {
   // Atualiza progresso na notificação a cada 5s
   useEffect(() => {
     if (!currentSong || !isPlaying) return;
+    if (isNativeYouTubeSong(currentSong)) return;
     const id = setInterval(() => startService(currentSong, true), 5000);
     return () => clearInterval(id);
   }, [currentSong?.id, isPlaying]);
 
   // ── Velocidade ────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (isNativeYouTubeSong(currentSong)) setNativeYouTubeSpeed(playbackSpeed).catch(() => {});
     if (audioRef.current) audioRef.current.playbackRate = playbackSpeed;
     if (settingsLoaded) saveSetting('playback_speed', playbackSpeed);
-  }, [playbackSpeed, audioUrl, settingsLoaded]); // re-aplica quando URL muda
+  }, [playbackSpeed, audioUrl, settingsLoaded, currentSong?.id]); // re-aplica quando URL muda
 
   // ── Volume ────────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (isNativeYouTubeSong(currentSong)) setNativeYouTubeVolume(isMuted ? 0 : volume).catch(() => {});
     if (audioRef.current) audioRef.current.volume = isMuted ? 0 : volume;
-  }, [volume, isMuted]);
+  }, [volume, isMuted, currentSong?.id]);
 
   // ── EQ via Web Audio API ─────────────────────────────────────────────────
   // Reconecta quando a URL muda (novo elemento <audio> = novo source node)
@@ -656,6 +789,22 @@ export default function App() {
     const t = setTimeout(() => applyEQ(eqPreset), 80);
     return () => clearTimeout(t);
   }, [audioUrl]);
+
+  const createBitCrusher = useCallback((ctx: AudioContext, bits: number) => {
+    const depth = Math.max(4, Math.min(24, Math.round(bits)));
+    const node = ctx.createScriptProcessor(1024, 2, 2);
+    const steps = Math.max(2, Math.pow(2, depth));
+    node.onaudioprocess = event => {
+      for (let channel = 0; channel < event.outputBuffer.numberOfChannels; channel++) {
+        const input = event.inputBuffer.getChannelData(Math.min(channel, event.inputBuffer.numberOfChannels - 1));
+        const output = event.outputBuffer.getChannelData(channel);
+        for (let i = 0; i < output.length; i++) {
+          output[i] = Math.round(input[i] * steps) / steps;
+        }
+      }
+    };
+    return node;
+  }, []);
 
   const applyEQ = useCallback((preset: string) => {
     if (isNativeAndroid()) {
@@ -683,6 +832,10 @@ export default function App() {
       if (eqNodeRef.current?._panInterval) {
         clearInterval(eqNodeRef.current._panInterval);
       }
+      if (eqNodeRef.current?._osc) {
+        try { eqNodeRef.current._osc.stop(); } catch {}
+        try { eqNodeRef.current._osc.disconnect(); } catch {}
+      }
       // Desconecta tudo
       try { eqSrcRef.current.disconnect(); } catch {}
 
@@ -696,58 +849,92 @@ export default function App() {
         case 'Pop':        filter.type='peaking';   filter.frequency.value=2000; filter.gain.value=5;  break;
         case 'Deep Bass':  filter.type='lowshelf';  filter.frequency.value=100;  filter.gain.value=15; break;
         case 'Soft':       filter.type='highshelf'; filter.frequency.value=6000; filter.gain.value=-6; break;
+        case 'Night':      filter.type='lowshelf';  filter.frequency.value=180;  filter.gain.value=-4; break;
+        case 'Live':       filter.type='peaking';   filter.frequency.value=1600; filter.gain.value=6; filter.Q.value=0.7; break;
         case 'Normal':
-          eqSrcRef.current.connect(ctx.destination);
+          if (bitDepth < 16) {
+            const crusher = createBitCrusher(ctx, bitDepth);
+            eqNodeRef.current = crusher;
+            eqSrcRef.current.connect(crusher);
+            crusher.connect(ctx.destination);
+          } else {
+            eqSrcRef.current.connect(ctx.destination);
+          }
           return;
         default:           filter.type='allpass'; break;
       }
       eqNodeRef.current = filter;
 
+      const inputNode = bitDepth < 16 ? createBitCrusher(ctx, bitDepth) : null;
+      if (inputNode) {
+        eqNodeRef.current = inputNode;
+        eqSrcRef.current.connect(inputNode);
+        inputNode.connect(filter);
+      } else {
+        eqSrcRef.current.connect(filter);
+      }
+
       if (preset === '8D Audio' || preset === '9D Audio') {
-        const panner = ctx.createPanner();
-        panner.panningModel = 'HRTF';
-        panner.distanceModel = 'linear';
-        panner.refDistance = 1; panner.maxDistance = 10000;
-        panner.rolloffFactor = 1; panner.coneInnerAngle = 360;
-        panner.coneOuterAngle = 0; panner.coneOuterGain = 0;
+        const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
 
         const delay = ctx.createDelay(0.5);
         const feedback = ctx.createGain();
-        delay.delayTime.value = preset === '9D Audio' ? 0.3 : 0.15;
-        feedback.gain.value   = preset === '9D Audio' ? 0.5 : 0.3;
+        delay.delayTime.value = preset === '9D Audio' ? 0.22 : 0.12;
+        feedback.gain.value   = preset === '9D Audio' ? 0.38 : 0.22;
         delay.connect(feedback); feedback.connect(delay);
         delay.connect(ctx.destination);
 
-        eqSrcRef.current.connect(filter);
-        filter.connect(panner);
         filter.connect(delay);
-        panner.connect(ctx.destination);
+        if (panner) {
+          filter.connect(panner);
+          panner.connect(ctx.destination);
+        } else {
+          filter.connect(ctx.destination);
+        }
+
+        let osc: OscillatorNode | null = null;
+        if (preset === '9D Audio') {
+          const tremolo = ctx.createGain();
+          const depth = ctx.createGain();
+          osc = ctx.createOscillator();
+          tremolo.gain.value = 0.76;
+          osc.frequency.value = 2.4;
+          depth.gain.value = 0.18;
+          osc.connect(depth);
+          depth.connect(tremolo.gain);
+          filter.disconnect();
+          filter.connect(delay);
+          filter.connect(tremolo);
+          tremolo.connect(panner || ctx.destination);
+          osc.start();
+        }
 
         let angle = 0;
-        const speed = preset === '9D Audio' ? 0.4 : 0.25;
+        const speed = preset === '9D Audio' ? 0.09 : 0.055;
         const interval = setInterval(() => {
-          angle += speed * (Math.PI / 180);
-          panner.positionX?.setValueAtTime(Math.sin(angle) * 5, ctx.currentTime);
-          panner.positionZ?.setValueAtTime(Math.cos(angle) * 5, ctx.currentTime);
+          angle += speed;
+          if (panner) panner.pan.setTargetAtTime(Math.sin(angle) * (preset === '9D Audio' ? 1 : 0.82), ctx.currentTime, 0.04);
         }, 50);
         eqNodeRef.current._panInterval = interval;
+        eqNodeRef.current._osc = osc;
       } else {
-        eqSrcRef.current.connect(filter);
         filter.connect(ctx.destination);
       }
     } catch {}
-  }, []);
+  }, [bitDepth, createBitCrusher, showToast]);
 
   useEffect(() => {
     applyEQ(eqPreset);
     if (settingsLoaded) saveSetting('eq_preset', eqPreset);
-  }, [eqPreset, applyEQ, settingsLoaded]);
+    if (settingsLoaded) saveSetting('audio_bit_depth', bitDepth);
+  }, [eqPreset, bitDepth, applyEQ, settingsLoaded]);
 
   // ── Seek ──────────────────────────────────────────────────────────────────
   const handleSeek = useCallback((v: number) => {
     setProgress(v);
-    if (audioRef.current) audioRef.current.currentTime = v;
-  }, []);
+    if (isNativeYouTubeSong(currentSong)) seekNativeYouTubeAudio(v).catch(() => {});
+    else if (audioRef.current) audioRef.current.currentTime = v;
+  }, [currentSong?.id]);
 
   const togglePlayPause = useCallback(() => {
     if (currentSong) setIsPlaying(!isPlaying);
@@ -762,8 +949,8 @@ export default function App() {
     try {
       const songs = await searchYoutube(searchQuery);
       setSearchResults(songs);
+      if (!songs.length) setSearchError('Nenhuma musica encontrada. Tente outro nome ou artista.');
     } catch (err: any) {
-      invalidateInstance();
       showToast(err?.message || 'Erro na busca.', 'error');
       setSearchError(err?.message || 'Falha na busca.');
     } finally { setIsSearching(false); setSearchStatus(''); }
@@ -800,6 +987,7 @@ export default function App() {
 
   const handleDownload = async (song: Song, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    setDownloaderSong(song);
     await saveOfflineSong(song).catch(() => {});
   };
 
@@ -847,6 +1035,10 @@ export default function App() {
   };
 
   const handlePlaySong = (song: Song, list?: Song[]) => {
+    shouldAutoplayCurrentRef.current = true;
+    if (isNativeYouTubeSong(currentSong) && !isNativeYouTubeSong(song)) {
+      stopNativeYouTubeAudio().catch(() => {});
+    }
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.removeAttribute('src');
@@ -861,8 +1053,10 @@ export default function App() {
     setCurrentSong(song);
     setQueue(list?.length ? list : [song]);
     setIsPlaying(true);
-    silentRef.current?.play().catch(() => {});
-    acquireWakeLock();
+    if (!isNativeYouTubeSong(song)) {
+      silentRef.current?.play().catch(() => {});
+      acquireWakeLock();
+    }
   };
 
   const handleBgFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -900,8 +1094,34 @@ export default function App() {
     await saveSetting('perms_asked', true);
   };
 
+  const closeFloatingWindow = useCallback(() => {
+    setIsFloating(false);
+    setNativePipAuto(false).catch(() => {});
+  }, []);
+
+  const toggleFloatingWindow = useCallback(() => {
+    setIsFloating(prev => {
+      const next = !prev;
+      setNativePipAuto(next && !!currentSong).catch(() => {});
+      if (next && currentSong && isNativeAndroid()) {
+        showToast('Popup ativado. Minimize o app para abrir a janela.', 'info');
+      }
+      return next;
+    });
+  }, [currentSong, showToast]);
+
   const handleEnterPip = () => {
-    try { (window as any).Capacitor?.Plugins?.App?.minimizeApp?.(); } catch {}
+    setIsFloating(true);
+    setNativePipAuto(!!currentSong).catch(() => {});
+    enterNativePip()
+      .then(result => {
+        if (!result.active) {
+          try { (window as any).Capacitor?.Plugins?.App?.minimizeApp?.(); } catch {}
+        }
+      })
+      .catch(() => {
+        try { (window as any).Capacitor?.Plugins?.App?.minimizeApp?.(); } catch {}
+      });
   };
 
   const openCinemaTab = () => {
@@ -911,6 +1131,21 @@ export default function App() {
       return;
     }
     audioRef.current?.pause();
+    setIsPlaying(false);
+    setAudioMode(false);
+    setActiveTab('cinema');
+  };
+
+  const handleCinemaSong = (song: Song, list: Song[]) => {
+    shouldAutoplayCurrentRef.current = false;
+    stopNativeYouTubeAudio().catch(() => {});
+    audioRef.current?.pause();
+    setAudioUrl(prev => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return null; });
+    setCurrentSong(song);
+    setQueue(list.length ? list : [song]);
+    setProgress(0);
+    setDuration(0);
+    setAudioLoading(false);
     setIsPlaying(false);
     setAudioMode(false);
     setActiveTab('cinema');
@@ -937,8 +1172,7 @@ export default function App() {
         const lines = ytImportUrl
           .split(/\r?\n|;/)
           .map(line => line.trim())
-          .filter(line => line.length > 2)
-          .slice(0, 100);
+          .filter(line => line.length > 2);
         if (!lines.length) throw new Error('Cole uma playlist do YouTube ou uma lista Artista - Musica.');
         title = `Playlist importada ${new Date().toLocaleDateString()}`;
         for (let i = 0; i < lines.length; i++) {
@@ -946,29 +1180,10 @@ export default function App() {
           const found = await searchYoutube(query).catch(() => []);
           if (found[0]) songs.push({ ...found[0], timestamp: Date.now() + i });
         }
-      } else try {
-        const inst = await getInstance();
-        const data = await fetchJSON(`${inst}/api/v1/playlists/${match[1]}`, 14000);
-        songs = (data.videos || []).map((v: any) => ({
-          id: v.videoId, title: v.title, artist: v.author || 'YouTube',
-          thumbnail: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`,
-          duration: v.lengthSeconds ? fmtSecs(v.lengthSeconds) : '',
-          url: `https://www.youtube.com/watch?v=${v.videoId}`, timestamp: Date.now(),
-        }));
-        title = data.title || title;
-      } catch {}
-      if (!songs.length && match) {
-        const data = await fetchJSON(`https://pipedapi.kavin.rocks/playlists/${match[1]}`, 14000).catch(() => null);
-        if (data?.relatedStreams) {
-          songs = (data.relatedStreams || []).map((v: any) => {
-            const id = v.url?.split('v=')[1]?.split('&')[0] || '';
-            return { id, title: v.title, artist: v.uploaderName || 'YouTube',
-              thumbnail: `https://i.ytimg.com/vi/${id}/mqdefault.jpg`,
-              duration: typeof v.duration === 'number' ? fmtSecs(v.duration) : '',
-              url: `https://www.youtube.com/watch?v=${id}`, timestamp: Date.now() };
-          }).filter((s: Song) => s.id.length > 5);
-          title = data.name || title;
-        }
+      } else {
+        const imported = await importYoutubePlaylist(ytImportUrl);
+        songs = imported.songs.map((song, i) => ({ ...song, timestamp: Date.now() + i }));
+        title = imported.title || title;
       }
       if (!songs.length) throw new Error('Playlist vazia ou inacessível');
       await savePlaylist({ id: match?.[1] || `import_${Date.now()}`, name: title, songs, isCustom: false, cover: songs[0]?.thumbnail });
@@ -1067,7 +1282,7 @@ export default function App() {
               { id:'favorites', icon:<Star size={20}/>,       label:'Favoritos' },
               { id:'offline',   icon:<Download size={20}/>,   label:'Offline' },
               { id:'cinema',    icon:<Video size={20}/>,      label:'Cinema' },
-              { id:'web',       icon:<Globe2 size={20}/>,     label:'YouTube' },
+              { id:'web',       icon:<Download size={20}/>,   label:'Baixar' },
               { id:'playlists', icon:<ListMusic size={20}/>,  label:'Playlists' },
             ].map(item => (
               <button key={item.id} onClick={() => item.id === 'cinema' ? openCinemaTab() : setActiveTab(item.id)} title={item.label}
@@ -1204,12 +1419,15 @@ export default function App() {
 
               {activeTab==='cinema' && (
                 <motion.div key="cinema" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="space-y-3">
-                  <VideoTab song={currentSong} startAt={progress} playlist={queue} autoplay onOpenPlayer={() => setShowVideo(true)} />
+                  <VideoTab song={currentSong} startAt={progress} playlist={queue} autoplay
+                    onOpenPlayer={() => setShowVideo(true)} onSelectSong={handleCinemaSong} />
                 </motion.div>
               )}
 
               {activeTab==='web' && (
-                <WebPortal currentSong={currentSong} frameUrl={webPortalUrl} onFrameUrlChange={setWebPortalUrl} />
+                <NativeDownloadTab currentSong={currentSong} downloaderSong={downloaderSong}
+                  onDownload={handleDownload} downloadingIds={downloadingIds} dlPct={dlPct}
+                  offlineIds={new Set(offlineSongs.map(song => song.id))} />
               )}
 
               {activeTab==='playlists' && (
@@ -1361,7 +1579,7 @@ export default function App() {
               style={playbackSpeed!==1.0?{color:'var(--accent,#e11d48)'}:{}}>
               {playbackSpeed!==1.0 ? `${playbackSpeed}x` : <Gauge className="w-4 h-4"/>}
             </button>
-            <button onClick={() => setIsFloating(!isFloating)} className="text-zinc-600 hover:text-white">
+            <button onClick={toggleFloatingWindow} className={isFloating ? 'text-white' : 'text-zinc-600 hover:text-white'}>
               <Maximize2 className="w-4 h-4"/>
             </button>
           </div>
@@ -1423,7 +1641,7 @@ export default function App() {
             style={{ width:'min(180px,48vw)' }}>
             <div className="bg-brand-dark rounded-2xl shadow-2xl overflow-hidden relative border"
               style={{ borderColor:`var(--accent,#e11d48)44` }}>
-              <button onClick={() => setIsFloating(false)} className="absolute top-2 right-2 z-10 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center text-zinc-400"><Minimize2 size={11}/></button>
+              <button onClick={closeFloatingWindow} className="absolute top-2 right-2 z-10 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center text-zinc-400"><Minimize2 size={11}/></button>
               <img src={currentSong.thumbnail} className="w-full object-cover" style={{aspectRatio:'16/9'}}/>
               <div className="p-2.5 bg-gradient-to-t from-black/90 to-transparent -mt-7 relative">
                 <p className="text-xs font-bold truncate">{currentSong.title}</p>
@@ -1457,7 +1675,8 @@ export default function App() {
         onAccentChange={setAccentColor} onCustomColorChange={v => { setCustomColor(v); if (settingsLoaded) saveSetting('custom_color', v); }}
         uiSize={uiSize} onUISizeChange={setUISize}
         eqPreset={eqPreset} onEQChange={setEqPreset}
-        notifGranted={perms.notifications === 'granted'}
+        bitDepth={bitDepth} onBitDepthChange={setBitDepth}
+        notifGranted
         onRequestPerms={() => { setShowSettings(false); setShowPermModal(true); }}/>
 
       <SpeedPanel isOpen={showSpeedPanel} speed={playbackSpeed} onClose={() => setShowSpeedPanel(false)} onChange={setPlaybackSpeed}/>
@@ -1492,48 +1711,119 @@ function BrandIcon({ image, video, className }: { image: string; video: string; 
   return <GatoIcon className={className} />;
 }
 
-const WebPortal = memo(function WebPortal({
-  currentSong, frameUrl, onFrameUrlChange,
+const NativeDownloadTab = memo(function NativeDownloadTab({
+  currentSong, downloaderSong, onDownload, downloadingIds, dlPct, offlineIds,
 }: {
   currentSong: Song | null;
-  frameUrl: string;
-  onFrameUrlChange: (url: string) => void;
+  downloaderSong: Song | null;
+  onDownload: (song: Song) => void;
+  downloadingIds: Set<string>;
+  dlPct: Record<string, number>;
+  offlineIds: Set<string>;
 }) {
-  const [query, setQuery] = useState(currentSong ? `${currentSong.title} ${currentSong.artist}` : '');
-  const youtubeLogin = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fm.youtube.com%2Ffeed%2Fplaylists';
+  const targetSong = downloaderSong || currentSong;
+  const [query, setQuery] = useState(targetSong ? nativeDownloadQuery(targetSong) : '');
+  const [results, setResults] = useState<Song[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [error, setError] = useState('');
 
-  const openYoutube = () => onFrameUrlChange('https://m.youtube.com/feed/playlists');
-  const openBrave = () => {
-    const q = encodeURIComponent(query.trim() || 'musicas youtube playlists');
-    onFrameUrlChange(`https://search.brave.com/search?q=${q}&source=web`);
+  useEffect(() => {
+    if (targetSong) setQuery(nativeDownloadQuery(targetSong));
+  }, [targetSong?.id]);
+
+  const handleSearch = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const term = query.trim();
+    if (!term) return;
+    setIsSearching(true);
+    setError('');
+    try {
+      const songs = await searchYoutube(term);
+      setResults(songs);
+      if (!songs.length) setError('Nenhuma musica encontrada.');
+    } catch (err: any) {
+      setError(err?.message || 'Busca indisponivel agora.');
+    } finally {
+      setIsSearching(false);
+    }
   };
-  const openExternal = (url = frameUrl) => window.open(url, '_blank', 'noopener,noreferrer');
+
+  const renderDownloadButton = (song: Song) => {
+    const saved = offlineIds.has(song.id) || song.isDownloaded || song.isLocal;
+    const downloading = downloadingIds.has(song.id);
+    return (
+      <button onClick={() => !saved && !downloading && onDownload(song)}
+        disabled={saved || downloading}
+        className={`flex h-9 min-w-24 items-center justify-center gap-2 rounded-xl px-3 text-xs font-bold ${
+          saved ? 'bg-green-500/15 text-green-400' : 'text-white disabled:opacity-60'
+        }`}
+        style={saved ? {} : {backgroundColor:'var(--accent,#e11d48)'}}>
+        {downloading ? <RefreshCw size={13} className="animate-spin"/> : saved ? <Check size={13}/> : <Download size={13}/>}
+        {downloading ? `${dlPct[song.id] || 1}%` : saved ? 'Offline' : 'Baixar'}
+      </button>
+    );
+  };
 
   return (
     <motion.div key="web" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="space-y-3">
       <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-        <div className="mb-3 flex items-center gap-2">
-          <button onClick={openYoutube} className="flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-2 text-xs font-bold">
-            <Youtube size={14}/> YouTube
+        <form onSubmit={handleSearch} className="flex gap-2">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500"/>
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Pesquisar para baixar"
+              className="w-full rounded-xl border border-white/10 bg-black/30 py-2.5 pl-9 pr-3 text-sm outline-none"/>
+          </div>
+          <button className="flex h-11 w-11 items-center justify-center rounded-xl text-white" style={{backgroundColor:'var(--accent,#e11d48)'}}>
+            {isSearching ? <RefreshCw size={16} className="animate-spin"/> : <SearchIcon size={16}/>}
           </button>
-          <button onClick={openBrave} className="flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-2 text-xs font-bold">
-            <Globe2 size={14}/> Brave AI
-          </button>
-          <button onClick={() => openExternal(youtubeLogin)} className="ml-auto rounded-xl px-3 py-2 text-xs font-bold text-white" style={{backgroundColor:'var(--accent,#e11d48)'}}>
-            Login Google
-          </button>
-        </div>
-        <div className="flex gap-2">
-          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar no Brave ou YouTube"
-            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs outline-none"/>
-          <button onClick={openBrave} className="rounded-xl bg-white/10 px-3 py-2 text-xs font-bold">Buscar</button>
-          <button onClick={() => openExternal()} className="rounded-xl bg-white/10 px-3 py-2 text-xs font-bold"><ExternalLink size={14}/></button>
-        </div>
+        </form>
+        {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
       </div>
-      <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black" style={{ height: 'calc(100dvh - 260px)', minHeight: 360 }}>
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-black/70 to-transparent" />
-        <iframe src={frameUrl} className="h-full w-full" title="YouTube e Brave" referrerPolicy="strict-origin-when-cross-origin" />
+
+      {targetSong && (
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+          <div className="flex items-center gap-3">
+            <img src={targetSong.thumbnail} className="h-12 w-12 rounded-xl object-cover"/>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-bold">{targetSong.title}</p>
+              <p className="truncate text-xs text-zinc-500">{targetSong.artist}</p>
+              {downloadingIds.has(targetSong.id) && (
+                <div className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-800">
+                  <div className="h-full rounded-full transition-all" style={{width:`${dlPct[targetSong.id] || 1}%`,backgroundColor:'var(--accent,#e11d48)'}}/>
+                </div>
+              )}
+            </div>
+            {renderDownloadButton(targetSong)}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {results.map(song => {
+          const downloading = downloadingIds.has(song.id);
+          return (
+            <div key={song.id} className="rounded-2xl border border-white/10 bg-white/5 p-2">
+              <div className="flex items-center gap-3">
+                <img src={song.thumbnail} className="h-12 w-12 flex-shrink-0 rounded-xl object-cover"/>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold">{song.title}</p>
+                  <p className="truncate text-xs text-zinc-500">{song.artist}</p>
+                  {downloading && (
+                    <div className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-800">
+                      <div className="h-full rounded-full transition-all" style={{width:`${dlPct[song.id] || 1}%`,backgroundColor:'var(--accent,#e11d48)'}}/>
+                    </div>
+                  )}
+                </div>
+                {renderDownloadButton(song)}
+              </div>
+            </div>
+          );
+        })}
       </div>
+
+      {!targetSong && !results.length && !error && (
+        <EmptyState icon={<Download size={44} className="opacity-20"/>} msg="Pesquise uma musica para salvar offline"/>
+      )}
     </motion.div>
   );
 });
